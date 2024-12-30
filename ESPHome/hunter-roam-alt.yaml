@@ -1,0 +1,406 @@
+# Hunter x-Core Project
+# Written by Chris Smith
+# Special thanks to Javier Vidao for creating the HunterRoam component used
+# in this project.  See https://github.com/javiervidao/Hunter_Roam
+# Pin Assignments:
+#  D0 - Not used. Wakeup pin.
+#  D1 - Hunter Disable. Inverted, output Low to disable. Default high.
+#  D2 - Hunter REM communication.
+#  D3 - Unused. Connected to Flash button
+#  D4 - Unused. Connected to LED
+#  D5 - Zone 1 sensor, inverted, pulled up
+#  D6 - Zone 1 sensor, inverted, pulled up
+#  D7 - Zone 1 sensor, inverted, pulled up
+#  D8 - Unused. Pulled to GND. CS pi for SPI interface.
+#  A0 - Zone 4 sensor, external pull up
+
+
+
+esphome:
+  name: hunterroam586
+  friendly_name: "Hunter Roam 586"
+  # output sympols to output.map for debugging. you can remove if not needed
+  platformio_options:
+    build_flags: 
+        - "-Wl,-Map,output.map"  
+
+esp8266:    
+  board: nodemcuv2
+  framework:
+    version: recommended
+  
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_key
+
+  ap:
+    ssid: "HunterRoam586"
+    password: !secret HUNTER_ap_wifi_key
+
+#captive_portal:
+
+logger:
+  baud_rate: 115200
+  level: info
+
+api:
+   encryption:
+      key: !secret HUNTER_apikey
+
+external_components:
+  - source:
+      type: git
+      url: http://github.com/javiervidao/Hunter_Roam
+    components: [hunter_roam]
+
+ota:
+  platform: esphome 
+  password:  $HUNTER_ota_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  ota: false
+  version: "3"
+  sorting_groups:
+    - id: zone_settings
+      name: "Zones"
+      sorting_weight: 10
+    - id: program_group
+      name: "Programs"
+      sorting_weight: 20
+    - id: zone_group
+      name: "Zone Status"
+      sorting_weight: 30
+    - id: original_zone
+      name: "Original Style Zone Settings"
+      sorting_weight: 40
+    - id: original_program
+      name: "Original Style Program Settings"
+      sorting_weight: 50
+    - id: maintenance_group
+      name: "Maintenance"
+      sorting_weight: 90
+  auth:
+    username: !secret HUNTER_web_username
+    password: !secret HUNTER_web_password
+   
+
+number:
+  - platform: template
+    name: "Run Time"
+    id: run_time
+    optimistic: true
+    min_value: 1
+    max_value: 60
+    initial_value: 2
+    step: 1
+    web_server:
+      sorting_group_id: zone_settings
+
+  - platform: template
+    name: "Zone"
+    id: hunter_zone
+    optimistic: true
+    min_value: 1
+    max_value: 3
+    initial_value: 1
+    step: 1
+    web_server:
+      sorting_group_id: original_zone
+      sorting_weight: 10
+
+  - platform: template
+    name: "Run Duration"
+    id: hunter_time
+    optimistic: true
+    min_value: 1
+    max_value: 60
+    initial_value: 10
+    step: 1
+    web_server:
+      sorting_group_id: original_zone
+      sorting_weight: 11
+
+  - platform: template
+    name: "Program"
+    id: hunter_program
+    optimistic: true
+    min_value: 1
+    max_value: 3
+    initial_value: 1
+    step: 1
+    web_server:
+      sorting_group_id: program_group
+
+
+# Define the output to the REM pin via the external component.
+hunter_roam:
+    id: hunter_roam_component
+    pin: 
+      number: D2
+      inverted: false
+
+# Create some buttons start, stop, run a program and reset our monitor
+button:
+  - platform: restart
+    name: "Restart Hunter"
+    web_server:
+      sorting_group_id: maintenance_group
+
+  - platform: template
+    name: "Start Zone"
+    id: start_zone
+    on_press:
+      - lambda: |-
+          if (id(hunter_roam_component).startZone(int(id(hunter_zone).state), int(id(hunter_time).state)) != 0) {
+            ESP_LOGE("HunterRoam", "Failed to start zone %d", int(id(hunter_zone).state));
+          } else {
+            ESP_LOGI("HunterRoam", "Zone %d started for %d minutes", int(id(hunter_zone).state), int(id(hunter_time).state));
+          }
+    web_server:
+      sorting_group_id: original_zone
+ 
+  - platform: template
+    name: "Stop Zone"
+    id: stop_zone
+    on_press:
+      - lambda: |-
+          if (id(hunter_roam_component).stopZone(int(id(hunter_zone).state)) != 0) {
+            ESP_LOGE("HunterRoam", "Failed to stop zone %d", int(id(hunter_zone).state));
+          } else {
+            ESP_LOGI("HunterRoam", "Zone %d stopped", int(id(hunter_zone).state));
+          }
+    web_server:
+      sorting_group_id: original_zone
+
+  - platform: template
+    name: "Run Program"
+    id: run_program
+    on_press:
+      - lambda: |-
+          if (id(hunter_roam_component).startProgram(int(id(hunter_program).state)) != 0) {
+            ESP_LOGE("HunterRoam", "Failed to start program %d", int(id(hunter_program).state));
+          } else {
+            ESP_LOGI("HunterRoam", "Program %d started",int(id(hunter_program).state));
+          }
+    web_server:
+      sorting_group_id: program_group
+
+      
+# Use the analog pin as a binary input for zone 4
+sensor:
+  - platform: adc
+    name: "Zone 4 Input"
+    id: zone4_input
+    pin: A0
+    unit_of_measurement: "V" 
+#    samples: 4
+    filters:
+      - multiply: 3.3
+      - min:
+          window_size: 9
+          send_every: 5
+          send_first_at: 5
+    update_interval: 0.46s
+    web_server:
+      sorting_group_id: maintenance_group
+          
+# The following sensors report the valve state of zones 1-4.
+binary_sensor:
+  - platform: gpio
+    name: "Zone 1"
+    id: zone1_status
+    pin: 
+      number: D5
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 5ms
+      - delayed_off: 500ms          
+    device_class: running
+    web_server:
+      sorting_group_id: zone_group
+
+  - platform: gpio
+    name: "Zone 2"
+    id: zone2_status
+    pin: 
+      number: D6
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 5ms
+      - delayed_off: 100ms          
+    device_class: running
+    web_server:
+      sorting_group_id: zone_group
+
+  - platform: gpio
+    name: "Zone 3"
+    id: zone3_status
+    pin: 
+      number: D7
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 5ms
+      - delayed_off: 100ms          
+    device_class: running
+    web_server:
+      sorting_group_id: zone_group
+
+
+# Zone 4 is special - we're sampling the input with our analog
+# input, A0, and need to convert this into a binary_sensor on/off.
+  - platform: template
+    id: "zone4_status"
+    name: "Zone 4"
+    lambda: |-
+      //ESP_LOGE("HunterRoam", "A0 voltage is %s", id(hunter_program).state);
+      if (id(zone4_input).state > 2.5) {
+        // High value indicates NO zone actiity
+        //ESP_LOGE("HunterRoam", "Zone 4 OFF");
+        return false;
+      } else {
+        // Low value indicates zone IS running
+        //ESP_LOGE("HunterRoam", "Zone 4 ON");
+        return true;
+      }
+    web_server:
+      sorting_group_id: zone_group
+
+# Short script to start and stop zones
+script:
+  - id: go_start_zone
+    parameters:
+      zone_number: int
+      zone_run_time: int
+    then:
+      lambda: |-
+        if (id(hunter_roam_component).startZone(zone_number, zone_run_time) != 0) {
+          ESP_LOGE("HunterRoam", "Failed to start Zone %d", zone_number);
+        } else {
+          ESP_LOGI("HunterRoam", "Zone %d started for %d minutes", zone_number, zone_run_time);
+        }
+
+  - id: go_stop_zone
+    parameters:
+      zone_number: int
+    then:
+      lambda: |-
+        if (id(hunter_roam_component).stopZone(zone_number) != 0) {
+          ESP_LOGE("HunterRoam", "Failed to start Zone %d", zone_number);
+        } else {
+          ESP_LOGI("HunterRoam", "Zone %d stopped", zone_number);
+        }
+
+# The following switch drives the SEN input.  If ON, this allows us to 
+# suppress all watering that might be programmed in the controller.  
+# Equivalent to forcing the controller into the OFF position.
+# Note that the Rain Sensor input has to be enabled on the X-Core by
+# putting the slide switch into the "Active" position.
+switch:
+  - platform: gpio
+    name: "Disable Hunter"
+    id: disable_hunter
+    pin:
+      number: D1
+      inverted: true
+    web_server:
+      sorting_group_id: maintenance_group
+
+  - platform: template
+    name: "Zone 1"
+    id: zone1_switch  
+    lambda: |-
+      return (id(zone1_status).state);
+    turn_on_action:
+      lambda: |-
+        id(go_start_zone)->execute(1, int(id(run_time).state));
+    turn_off_action:
+       lambda: |-
+        id(go_stop_zone)->execute(1);
+    web_server:
+      sorting_group_id: zone_settings
+    
+  - platform: template
+    name: "Zone 2"
+    id: zone2_switch  
+    lambda: |-
+      return (id(zone2_status).state);
+    turn_on_action:
+      lambda: |-
+        id(go_start_zone)->execute(2, int(id(run_time).state));
+    turn_off_action:
+       lambda: |-
+        id(go_stop_zone)->execute(2);
+    web_server:
+      sorting_group_id: zone_settings
+    
+  - platform: template
+    name: "Zone 3"
+    id: zone3_switch  
+    lambda: |-
+      return (id(zone3_status).state);
+    turn_on_action:
+      lambda: |-
+        id(go_start_zone)->execute(3, int(id(run_time).state));
+    turn_off_action:
+       lambda: |-
+        id(go_stop_zone)->execute(3);
+    web_server:
+      sorting_group_id: zone_settings
+    
+  - platform: template
+    name: "Zone 4"
+    id: zone4_switch  
+    lambda: |-
+      return (id(zone4_status).state);
+    turn_on_action:
+      lambda: |-
+        id(go_start_zone)->execute(4, int(id(run_time).state));
+    turn_off_action:
+       lambda: |-
+        id(go_stop_zone)->execute(4);
+    web_server:
+      sorting_group_id: zone_settings
+    
+
+
+# Post some maintenance stuff as well...
+text_sensor:
+  # Lets add some sensors about this devices
+  - platform: wifi_info
+    ip_address:
+      name: ESP IP Address
+      web_server:
+        sorting_group_id: maintenance_group
+    ssid:
+      name: ESP SSID
+      web_server:
+        sorting_group_id: maintenance_group
+    bssid:
+      name: ESP BSSID
+      web_server:
+        sorting_group_id: maintenance_group
+    mac_address:
+      name: ESP Mac Wifi Address
+      web_server:
+        sorting_group_id: maintenance_group
+    dns_address:
+      name: ESP DNS Address
+      web_server:
+        sorting_group_id: maintenance_group
+      
+  - platform: version
+    name: "ESPHome Version"
+    web_server:
+      sorting_group_id: maintenance_group
